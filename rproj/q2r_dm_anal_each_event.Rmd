@@ -1,0 +1,855 @@
+---
+title: "q2r_dm_anal_each_event"
+author: "fk506cni"
+date: "2024-04-25"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## survival analysis multiple state independent and not competitive.
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE
+                      # , cache=TRUE,
+                      # cache.lazy = FALSE
+                      )
+```
+
+
+```{r}
+# remove.packages("vctrs")
+# install.packages("vctrs")
+# install.packages("ggnewscale")
+
+require(tidyverse)
+require(magrittr)
+require(data.table)
+require(arrow)
+require(survival)
+require(survminer)
+require(table1)
+require(officer)
+require(ggpubr)
+require(extrafont)
+require(ggnewscale)
+require(openxlsx)
+loadfonts(quiet = T)
+```
+
+```{r}
+outputdir <- "./figs/"
+if(!dir.exists(outputdir)){
+  dir.create(outputdir)
+}
+
+
+ggsave2_tri_tag <- function(plot, wid = 9, hei=9, tag ="_null"){
+  plot_name <- deparse(substitute(plot))
+  
+  #png
+  file_name <- paste(outputdir, tag, "_", plot_name, ".png", sep = "",collapse = "")
+  ggsave(filename = file_name,plot = plot,device = "png",width = wid, height = hei,dpi = 300,units = "cm")
+  
+  
+  #pdf
+  file_name <- paste(outputdir, tag, "_", plot_name, ".pdf", sep = "",collapse = "")
+  
+  #pptx
+  file_name <- paste(outputdir, tag, "_", plot_name, ".pptx", sep = "",collapse = "")
+  plot_ed <- rvg::dml(ggobj = plot,width = wid, height = hei)
+  
+  doc <- read_pptx() %>%
+    add_slide('Title and Content', 'Office Theme') %>%
+    ph_with(value = "", location = ph_location_type(type = "title")) %>%
+    ph_with(value = plot_ed, location = ph_location(type = "body",width = cm2inch(wid), height = cm2inch(hei),left = 2, top = 2))
+  doc %>%
+    print(target = file_name)
+}
+
+ggsave2_tri <- function(plot, wid = 9, hei=9){
+  plot_name <- deparse(substitute(plot))
+  
+  #png
+  file_name <- paste(outputdir,plot_name, ".png", sep = "",collapse = "")
+  ggsave(filename = file_name,plot = plot,device = "png",width = wid, height = hei,dpi = 300,units = "cm")
+  
+  
+  #pdf
+  file_name <- paste(outputdir,plot_name, ".pdf", sep = "",collapse = "")
+  
+  #pptx
+  file_name <- paste(outputdir,plot_name, ".pptx", sep = "",collapse = "")
+  plot_ed <- rvg::dml(ggobj = plot,width = wid, height = hei)
+  
+  doc <- read_pptx() %>%
+    add_slide('Title and Content', 'Office Theme') %>%
+    ph_with(value = "", location = ph_location_type(type = "title")) %>%
+    ph_with(value = plot_ed, location = ph_location(type = "body",width = cm2inch(wid), height = cm2inch(hei),left = 2, top = 2))
+  doc %>%
+    print(target = file_name)
+}
+
+inch2cm <- function(x){
+  return(x/0.39370)
+}
+cm2inch <- function(x){
+  return(0.39370*x)
+}
+
+p2cm <- function(x){
+  return(as.integer(0.008466666666666667 * x))
+}
+
+cm2p <- function(x){
+  return(as.integer(118.11023622047244 *x))
+}
+
+sv2ggkm <- function(svfit, df){
+  p <- ggsurvplot(fit = svfit, data = df,
+                   main = "Survival curve",
+                risk.table.title = "Risk at pt", risk.table.y.text.col = TRUE,
+           risk.table.y.text = FALSE, fontsize = 5,
+           risk.table = TRUE, 
+           tables.theme = theme_pubr(base_family = "Times"), 
+           
+           ggtheme = theme_pubr(base_family = "Times"))
+  p_km <- p$plot
+  p_tb <- p$table
+  p2 <- cowplot::plot_grid(p_km, p_tb, ncol = 1,align = "v", rel_heights = c(3,1))
+  grid::grid.draw(p2)
+  return(p2)
+}
+```
+
+```{r}
+icd2locus <- read.xlsx("./mat/icd2_locus_temp.xlsx") %>% 
+  select(event_type, c_labels) %>% 
+  mutate(locus = str_to_title(c_labels)) %>% 
+  mutate(explanation = str_c(event_type, ":", locus, sep=""))
+icd2locus %>% DT::datatable()
+```
+
+
+```{r}
+fs <- list.files("../../share3/smr/", pattern = "df_pt_smr_nc", full.names = T)
+# fs <- list.files("../../share3/smr/", pattern = ".parquet", full.names = T)
+fs
+```
+
+```{r}
+min_folow <- 4
+min_age <- 40
+max_age <- 100
+d_m_p_y <- 12/365.25
+
+l_df <- list()
+# for(i in 1:length(fs[1:1])){
+for(i in 1:length(fs)){
+
+  f <- fs[i]
+  print(f)
+  df_i <- arrow::read_parquet(f) %>%
+      mutate(sex_code_s = if_else(
+        sex_code == "1", "male","female"
+      )) %>%
+    mutate(daycount= as.numeric(time, unit="days")) %>% 
+    mutate(with_in_3m =  daycount <= 100,
+           with_dm = event_type == "dm",
+           with_cancer = str_detect(event_type, "^[CD]")) %>% 
+    group_by(kojin_id) %>% 
+    mutate(with_dm_in_3m = sum(with_in_3m & with_dm) > 0,
+           with_cancer_in_3m = sum(with_in_3m & with_cancer) > 0)
+
+
+  l_df[[i]] <- df_i
+  # break
+}
+
+# df_i$time[1:3] %>% class()
+# as.numeric(df_i$time[1:3], unit="days")
+
+# df_i$age_categ %>% unique() %>% sort()
+df <- data.table::rbindlist(l_df)
+
+# df_org$cancers %>% 
+#   .[str_detect(",",.)]
+  # str_detect(",")
+
+# age_grades <- df$age_categ %>% unique() %>% sort() %>% .[2:4]
+# age_grades
+df %>% 
+  nrow() %>% 
+  print()
+rm(l_df)
+# rm(df_i)
+
+gc(reset = TRUE)
+gc(reset = TRUE)
+
+df$age_at_start %>% MASS::truehist()
+```
+
+```{r}
+pts_whole_smr <- df %>% 
+  dplyr::distinct(kojin_id, sex_code_s, age_at_start, with_cancer_in_3m, with_dm_in_3m) %>% 
+    mutate(age_categ = case_when(
+      age_at_start < 10 ~ "age<10",
+      age_at_start < 20 ~ "10<=age<20",
+      age_at_start < 30 ~ "20<=age<30",
+      age_at_start < 40 ~ "30<=age<40",
+      age_at_start < 50 ~ "40<=age<50",
+      age_at_start < 60 ~ "50<=age<60",
+      age_at_start < 70 ~ "60<=age<70",
+      age_at_start < 80 ~ "70<=age<80",
+      age_at_start < 90 ~ "80<=age<90",
+      age_at_start < 100 ~ "90<=age<100",
+      age_at_start < 150 ~ "100<age",
+    ) %>% factor(., levels=c("age<10","10<=age<20", "20<=age<30", "30<=age<40",
+                             "40<=age<50", "50<=age<60", "60<=age<70",
+                             "70<=age<80", "80<=age<90" ,"90<=age<100",
+                             "100<age"))) %>% 
+  group_by(age_categ,sex_code_s, with_dm_in_3m) %>% 
+  summarise(n=n()) %>% 
+  mutate(gm_categ= case_when(
+    sex_code_s == "male" & !with_dm_in_3m ~ "male without DM",
+    sex_code_s == "male" & with_dm_in_3m ~ "male with DM",
+    sex_code_s == "female" & !with_dm_in_3m ~ "female without DM",
+    sex_code_s == "female" & with_dm_in_3m ~ "female with DM",
+    T ~ "unknown"
+  ) %>% factor()) %>% 
+  mutate(n = if_else(sex_code_s == "male", n, -n))
+  
+
+
+# p_pts_m <- ggplot()+
+#   theme_pubr(base_family = "Times")+
+#   geom_col(
+#     data=pts_whole_smr %>% 
+#       filter(sex_code_s=="male"),
+#     aes(x=n, y=age_categ, fill=gm_categ)
+#   )
+# p_pts_f <- ggplot()+
+#   theme_pubr(base_family = "Times")+
+#   geom_col(
+#     data=pts_whole_smr %>% 
+#       filter(sex_code_s=="female"),
+#     aes(x=n, y=age_categ, fill=gm_categ)
+#   )
+
+p_pts_whole <- ggplot()+
+  theme_pubr(base_family = "Times")+
+  geom_col(
+    data=pts_whole_smr ,
+    aes(x=n, y=age_categ, fill=gm_categ),
+    color="black",
+    width=0.85
+  )+
+  geom_hline(yintercept = 4.5, color= "red")+
+  geom_hline(yintercept = 10.5, color= "red")+
+  labs(fill ="Gender/DM status")+
+  xlab("Population")+ylab("Age Grade")
+  
+p_pts_whole
+
+
+ggsave2_tri(p_pts_whole, wid = 18, hei= 15)
+
+```
+
+
+```{r}
+cuttoff <-1e-3
+cuttoff
+total_pts <- df$kojin_id %>% 
+  unique() %>% length()
+
+main_cancers <- df %>% 
+  group_by(event_type) %>% 
+  summarize(n=n()) %>% 
+  mutate(burden = n/total_pts) %>% 
+  filter(burden > cuttoff) %>% 
+  filter(!event_type %in% c("cens","dm"))
+
+main_cancers %>% DT::datatable()
+
+main_cancers %>% write.xlsx("./res/main_cancer_whole_org.xlsx")
+
+categ_tabl <- main_cancers %>% 
+  .[["event_type"]]
+categ_tabl
+```
+
+
+```{r}
+main_cancers_split <- df %>% 
+  group_by(event_type,with_dm_in_3m, sex_code_s) %>%
+  summarize(n=n()) %>% 
+  filter(!event_type %in% c("dm")) %>%
+  group_by(with_dm_in_3m, sex_code_s) %>%
+  mutate(n_dm_status = max(n)) %>% 
+  mutate(burden = n/n_dm_status) %>% 
+  filter(!event_type %in% c("cens")) %>% 
+  mutate(with_dm_in_3m_s = if_else(with_dm_in_3m, "with_DM", "without_DM")) %>%
+  ungroup() %T>%
+      assign(x="main_cancers_split_p", ., pos=1)  %>% 
+  select(event_type, with_dm_in_3m_s, burden, sex_code_s) %>%
+  pivot_wider(names_from = with_dm_in_3m_s, values_from = burden,
+              values_fill = 0) %>%
+  mutate(with_DM = 100 *with_DM,
+         without_DM = 100 *without_DM
+         )
+# %>% 
+#   rename(with_DM = with_DM_ratio,
+#          without_DM = without_DM_ratio)
+
+main_cancers_split_p <- main_cancers_split_p %>%
+  select(-with_dm_in_3m, -burden) %>% 
+  tidyr::complete(event_type, nesting(with_dm_in_3m_s, n_dm_status),
+                  fill=list(n=0))   %>%
+  mutate(rate_str = str_c(n %>% as.character(),
+                          "/",
+                          n_dm_status %>% as.character(),
+                          sep="")) %>%
+  select(event_type, with_dm_in_3m_s, rate_str) %>% 
+  pivot_wider(names_from = with_dm_in_3m_s, values_from = rate_str)
+
+#   
+#   mutate(burden = n/total_pts) %>% 
+#   filter(burden > cuttoff) %>% 
+#   filter(!event_type %in% c("cens","dm"))
+
+```
+
+```{r}
+main_cancers_split_long <- main_cancers_split %>% 
+  tidyr::pivot_longer(cols = c("without_DM","with_DM")) %>% 
+  left_join(icd2locus, by="event_type") %>% 
+  filter(!is.na(c_labels)) %>% 
+  mutate(explanation_f = explanation %>% 
+           factor(., levels= explanation %>% 
+                    unique() %>% 
+                    sort() %>% 
+                    rev())) %>% 
+  mutate(gm_status = str_c(sex_code_s, name, sep=" ") %>% 
+           str_replace("_", " ")) %>% 
+  mutate(n = if_else(sex_code_s=="female", -value, value))
+  
+
+# p_cancer_rate <- ggplot()+theme_pubr(base_family = "Times",legend = c(0.75, 0.6))+
+#   geom_bar(data = main_cancers_split_long,
+#            aes(x=explanation_f, y=value,fill=name),color="black",stat = "identity", position = "dodge", width =0.75)+
+#   coord_flip(expand = F)+ylab("Percent Diagnosed Patients")+xlab("Cancer Locus")
+# p_cancer_rate
+
+p_cancer_rate <- ggplot()+
+  theme_pubr(base_family = "Times")+
+  geom_col(
+    data=main_cancers_split_long ,
+    aes(x=n, y=explanation_f, fill=name),
+    color="black",
+    width=0.85, position = "dodge"
+  )+
+  labs(fill ="DM status")+
+  xlab("Percent Diagnosed Patients")+ylab("Cancer Locus")+
+  geom_text(aes(x=-3, y= 22, label="Female"), family= "Times")+
+  geom_text(aes(x=3, y= 22, label="Male"), family= "Times")
+p_cancer_rate
+ggsave2_tri(p_cancer_rate, wid=18, hei = 18)
+```
+
+
+```{r}
+
+
+df$kojin_id %>% unique() %>% length() %>% 
+  sprintf("whole:%s",.)
+
+
+df <- df %>%
+  dplyr::filter(min_age <= age_at_start) %>% 
+  dplyr::filter(age_at_start < max_age)
+df$kojin_id %>% unique() %>% length() %>% 
+  sprintf("with_age_range:%s",.)
+
+
+df <- df %>%
+  dplyr::filter(min_folow <= follow)
+df$kojin_id %>% unique() %>% length() %>%
+  sprintf("with_4m_over_follow:%s",.)
+
+
+df <- df %>%
+  dplyr::filter(!with_cancer_in_3m)
+df$kojin_id %>% unique() %>% length() %>% 
+  sprintf("without_cancer_1st_3m:%s",.)
+
+
+df <- df %>% 
+    mutate(age_categ = case_when(
+      age_at_start < 60 ~ "40<=age<60",
+      age_at_start < 80 ~ "60<=age<80",
+      age_at_start < 100 ~ "80<=age<100",
+      T ~ "unknown",
+    ) %>% factor(., levels=c("40<=age<60",
+                             "60<=age<80",
+                             "80<=age<100"))
+             )
+
+
+age_grades <- df$age_categ %>% unique() %>% sort()
+age_grades
+
+# rm(df_org)
+gc(reset = TRUE)
+gc(reset = TRUE)
+```
+
+```{r}
+custom_render <- function(x){
+  res_name <- names(x)
+
+  res <- x %>%
+    str_replace_all(., "[0-9]+",
+                  . %>% 
+                    str_extract_all("[0-9]+") %>% 
+                    as.numeric() %>% 
+                    format(big.mark = ","))
+  names(res) <- res_name
+  return(res)
+}
+```
+
+
+```{r}
+df_tab1 <- df %>% 
+  group_by(kojin_id, sex_code_s , age_categ, follow,with_dm_in_3m) %>% 
+  summarise(with_cancer = sum(with_cancer) >0) %>% 
+  mutate(with_dm_in_3m_s = if_else(with_dm_in_3m,
+                                   "with DM \nin start 3 months",
+                                   "without \nDM in start 3 months"))
+df_tab1$kojin_id %>% unique() %>% length()
+
+whole_pt_num <- df_tab1 %>% 
+  nrow()
+
+
+# df_tab1 %>% 
+#   setLabel(.[["sex_code_s"]], "Sex")
+label(df_tab1$sex_code_s) <- "Sex"
+label(df_tab1$age_categ) <- "Age grade"
+label(df_tab1$follow) <- "Follow duration"
+label(df_tab1$with_cancer) <- "Cancer diagnosis"
+# df_tab1
+tb1 <- table1(~ sex_code_s +age_categ + follow+ with_cancer| with_dm_in_3m_s, data=df_tab1,
+                            # render.continuous = custom_render,
+              render.categorical = function(x){
+                  render.categorical.default(x) %>% 
+                  custom_render() %>% 
+                  return()} 
+              )
+tb1
+```
+
+```{r}
+main_cancer_each <- df %>% 
+  dplyr::filter(min_age <= age_at_start) %>% 
+  dplyr::filter(age_at_start < max_age) %>% 
+  filter(!event_type %in% c("dm")) %>%
+  filter(!str_detect(event_type, "^D")) %>% 
+  select(kojin_id,age_at_start, sex_code_s, event_type) %>% 
+  mutate(is_cens = event_type != "cens") %>% 
+  pivot_wider( names_from = event_type, values_from = is_cens, values_fill = F) 
+
+df_tab1_with <- df_tab1 %>% 
+  select(kojin_id, with_dm_in_3m_s) %>% 
+  left_join(main_cancer_each, by="kojin_id")
+```
+
+
+```{r}
+
+tb1_fom <- "~ "
+for(categ in categ_tabl %>% 
+    .[str_detect(.,"^C")]){
+  labex_c <- icd2locus %>% 
+    filter(event_type == categ) %>% 
+    .[["explanation"]]
+  print(labex_c)
+  label(df_tab1_with[[categ]]) <- labex_c
+  tb1_fom <- c(tb1_fom, " + `", categ, "` ") %>% 
+    str_c(collapse = "")
+  label(main_cancer_each[[categ]]) <- categ
+}
+
+tb1_fom <- c(tb1_fom, "|  with_dm_in_3m_s") %>% 
+    str_c(collapse = " ")
+
+tb2 <- table1(tb1_fom %>% as.formula(),
+              data=df_tab1_with,
+              render.categorical = function(x){
+                  render.categorical.default(x) %>% 
+                  custom_render() %>% 
+                  return()} 
+              )
+
+
+tb2
+```
+
+
+```{r}
+df_tb1 <- tb1 %>% as.data.frame()
+df_tb1 %>% DT::datatable()
+
+df_tb1 %>% write.xlsx("./res/table1.xlsx")
+```
+
+```{r}
+df_tb2 <- tb2 %>% as.data.frame()
+df_tb2 %>% DT::datatable()
+
+df_tb2 %>% write.xlsx("./res/table2.xlsx")
+```
+
+
+
+```{r}
+main_cancers %>% DT::datatable()
+```
+
+
+```{r}
+df_sub <- df %>%
+  filter(event_type != "dm") %>% 
+  group_by(kojin_id,sex_code_s,age_categ,with_dm_in_3m) %>% 
+  filter(daycount == min(daycount)) %>% 
+  summarise(event_ = sum(str_detect(event_type, "^[CD]")) > 0,
+            time = min(daycount)/(365.25/12))
+  
+
+cx <- coxph(Surv(time, event_) ~ with_dm_in_3m+ sex_code_s+age_categ , 
+            data = df_sub
+              )
+# df$time[1:3] %>% 
+#   as.numeric(units = "days") *d_m_p_y
+# # df$last_point[1:3] - df$start[1:3]
+# df$time[1:3] %>% class()
+
+cxsmr <- cx %>% summary()
+
+cxsmr %>% print()
+
+
+
+cx_inf <- exp(confint(cx, level = 0.95, process = "Event")) %>% 
+  as.data.frame()
+cx_inf
+# cx_coef
+
+cx_coef <- coef(cxsmr) %>% 
+  as.data.frame() %>% 
+  bind_cols(cx_inf) %>% 
+  mutate(p_value = case_when(
+    `Pr(>|z|)` < 1e-6 ~ "<1e-6",
+    `Pr(>|z|)` < 1e-5 ~ "<1e-5",
+    `Pr(>|z|)` < 1e-4 ~ "<1e-4",
+    `Pr(>|z|)` < 1e-3 ~ "<1e-3",
+    `Pr(>|z|)` < 1e-2 ~ "<1e-2",
+    `Pr(>|z|)` < 1e-1 ~ "<1e-1",
+    T ~ "1e-1<="
+  )) %>% 
+  mutate(Hazard_Ratio = format(`exp(coef)`,digits = 3),
+         l_hr = format(`2.5 %`,digits = 3),
+         u_hr = format(`97.5 %`,digits = 3),
+         s_95percentCI = str_c("(", l_hr, "-", u_hr, ")", sep="")) %>% 
+  mutate(rn = rownames(.)) %>% 
+  select(rn,Hazard_Ratio,s_95percentCI,p_value, everything())
+
+
+cx_coef %>% 
+  DT::datatable()
+cx_coef %>%  
+  write.xlsx("./res/cx_whole_coef_smr.xlsx")
+
+
+```
+
+
+
+
+```{r}
+require(survminer)
+sv2ggkm <- function(svfit, df){
+  p <- ggsurvplot(fit = svfit, data = df,
+                   main = "KM curve",
+                risk.table.title = "Patients at risk", risk.table.y.text.col = TRUE,
+           risk.table.y.text = FALSE, fontsize = 4,
+           risk.table = TRUE, 
+           tables.theme = theme_pubr(base_family = "Times"), 
+           xlim = c(0, 90),
+           ggtheme = theme_pubr(base_family = "Times"))
+  
+  p_km <- p$plot
+  p_tb <- p$table
+  
+  p_tb$layers[[1]]$data$llabels <- p_tb$layers[[1]]$data$llabels %>% 
+    scales::comma()
+
+  p2 <- cowplot::plot_grid(p_km, p_tb, ncol = 1,align = "v", rel_heights = c(3,1))
+  grid::grid.draw(p2)
+  return(p2)
+}
+```
+
+
+```{r}
+
+svf <- survfit(Surv(time, event_) ~  with_dm_in_3m, data = df_sub)
+# ggsurvplot(fit = svf, data = df)
+
+# kmp <- ggsurvplot(fit = svf, data = df_sub,
+#                    main = "KM curve",
+#                 risk.table.title = "Patients at risk", risk.table.y.text.col = TRUE,
+#            risk.table.y.text = FALSE, fontsize = 4,
+#            risk.table = TRUE, 
+#            tables.theme = theme_pubr(base_family = "Times"), 
+#            xlim = c(0, 90),
+#            ggtheme = theme_pubr(base_family = "Times"))
+# kmp$plot$layers[[1]]
+# kmp$table$layers[[1]]$data$llabels %>% 
+#    scales::comma()
+
+ps <- sv2ggkm(svfit = svf, df = df_sub)
+grid::grid.draw(ps)
+ggsave2_tri(ps, wid =18, hei=15)
+```
+
+```{r}
+
+svf2 <- survfit(Surv(time, event_) ~  with_dm_in_3m +age_categ, data = df_sub)
+# ggsurvplot(fit = svf, data = df)
+
+ps2 <- sv2ggkm(svfit = svf2, df = df_sub)
+grid::grid.draw(ps2)
+ggsave2_tri(ps2, wid =18, hei=25)
+```
+
+
+```{r}
+categ_tabl
+site_each <- categ_tabl %>%
+    .[str_detect(.,"^C")]
+#   .[!. %in% c("Multiple", "WithoutCancers")]
+
+
+
+l_m <- list()
+c_name <- c()
+i <- 1
+
+
+for (a in age_grades){
+  a_s <- a %>% as.character()
+  print(a_s)
+
+  df_sub <- df %>%
+    ungroup() %>%
+    filter(age_categ == a) %>%
+    filter(event_type != "dm")
+  df_sub %>%
+    dim() %>%
+    print()
+  for (g in c("male", "female")){
+    df_sub_sub <- df_sub %>%
+                          filter(sex_code_s == g)
+    for (categ in site_each){
+      label_i <- str_c(categ, g,a_s, sep= "_")
+      print(label_i)
+      df_sub3 <- df_sub_sub %>%
+        filter(event_type %in% c(categ, "cens")) %>%
+        group_by(kojin_id,with_dm_in_3m) %>%
+        summarise(event_ = sum(str_detect(event_type, "^[CD]")) > 0,
+                  time = min(daycount))
+
+      m <- coxph(Surv(time, event_) ~ with_dm_in_3m,
+                        data = df_sub3)
+      # l_m[[i]]["model"] <- m
+      l_m[[i]] <- m%>%
+          summary()
+
+
+      print(label_i)
+      print(l_m[[i]])
+
+      i <- i+1
+      c_name <- c(c_name, label_i)
+
+      f_model <- c("./models/", label_i, "_",as.character(i),".rds") %>%
+        str_c(sep = "", collapse = "")
+      print(f_model)
+      saveRDS(m,file = f_model)
+
+      gc(reset = TRUE)
+      gc(reset = TRUE)
+    }
+    df_sub3 <- df_sub_sub %>%
+        group_by(kojin_id,with_dm_in_3m) %>%
+        summarise(event_ = sum(str_detect(event_type, "^[CD]")) > 0,
+                  time = min(daycount))
+    m <- coxph(Surv(time, event_) ~ with_dm_in_3m,
+                        data = df_sub3)
+
+    l_m[[i]] <- m%>%
+        summary()
+
+    label_i <- str_c("AllCancer", g, a_s, sep= "_", collapse = "")
+    print(label_i)
+    print(l_m[[i]])
+
+    c_name <- c(c_name, label_i)
+    i <- i+1
+
+    f_model <- c("./models/", label_i, "_",as.character(i),".rds") %>%
+      str_c(sep = "", collapse = "")
+    print(f_model)
+    saveRDS(m,file = f_model)
+
+    # break
+    gc(reset = TRUE)
+    gc(reset = TRUE)
+  }
+}
+
+warnings()
+names(l_m) <- c_name
+```
+
+
+```{r}
+l_res <- list()
+for(i in 1:length(l_m)){
+  tag <- c_name[[i]]
+  s <- l_m[[i]]
+
+  n_s <- s$n
+  event_s <- s$nevent
+  df_i <- s %>% coef() %>% as.data.frame() %>%
+    mutate(n_ = n_s,
+           event_ = event_s,
+           tag = tag) %>%
+    bind_cols(.,
+              s$waldtest %>% t() %>% as.data.frame())
+  l_res[[i]] <- df_i
+
+  # break
+}
+# warnings()
+```
+
+```{r}
+l_m %>% saveRDS(.,
+                "./res/l_model.rds")
+```
+
+
+
+```{r}
+df_res <- data.table::rbindlist(l_res)
+
+# tag
+# s %>% coef() %>% as.data.frame()
+#
+# s$nevent
+# s$n
+
+df_res %>% DT::datatable()
+
+df_res <- df_res %>%
+  mutate(cancer_location = tag %>%
+           str_split_i(pattern = "_", i = 1),
+         gender = tag %>%
+           str_split_i(pattern = "_", i = 2),
+         age_categ_s = tag %>%
+           str_split_i(pattern = "_", i = 3)
+         ) %>%
+  mutate(hr= `exp(coef)`) %>%
+  # mutate(age_categ = age_categ_s %>%
+  #          factor(., levels=c("30<=age<40",
+  #                            "40<=age<50", "50<=age<60", "60<=age<70",
+  #                            "70<=age<80", "80<=age<90" ,"90<=age<100"))) %>%
+  mutate(age_categ = age_categ_s %>%
+           factor(., levels=c("40<=age<60","60<=age<80","80<=age<100"))) %>%
+  mutate(test_p = case_when(
+    pvalue < 0.0001 ~ "<0.0001",
+    pvalue < 0.001 ~ "<0.001",
+    pvalue < 0.01 ~ "<0.01",
+    pvalue < 0.1 ~ "<0.1",
+    T ~ "0.1<="
+  ) %>%
+    factor(levels = c("<0.0001","<0.001", "<0.01","<0.1","0.1<=") %>%
+             rev())) %>%
+  mutate(test_p_grade = test_p %>% as.numeric()) %>%
+  filter(gender != "female" | cancer_location != "C61") %>%
+  filter(gender != "male" | cancer_location != "C50") %>%
+  filter(gender != "male" | cancer_location != "C53") %>%
+  filter(gender != "male" | cancer_location != "C54") %>%
+  filter(gender != "male" | cancer_location != "C56") %>%
+  mutate(m_log_p = -log10(pvalue))
+# %>%
+#   filter(0.05 < pvalue)
+
+# C61: prostate in male
+# C50: breast in female
+# C53: uterus cervix in female
+# C54: uterus corpus in female
+# C56: ovary in female
+
+```
+
+```{r}
+# p_dist <- ggplot()+theme_pubr(base_family = "Times")+
+#   geom_line(data= df_res,
+#             aes(x=age_categ, y= hr, color=cancer_location, group=cancer_location))+
+#   facet_wrap(~ gender, nrow = 12)
+# p_dist
+
+
+for(lc in df_res$cancer_location %>%
+    unique()){
+  print(lc)
+  df_sub <- df_res %>%
+    filter(cancer_location == lc)
+  # print(df_sub)
+  p_dist <- ggplot()+theme_pubr(base_family = "Times", legend = "right")+
+    geom_line(data= df_sub,
+              aes(x=age_categ, y= hr, color=gender, group=gender))+
+    # new_scale_color()+
+    geom_point(data= df_sub,
+              aes(x=age_categ, y= hr, color=gender, size=test_p) )+
+    ggtitle(lc)+
+    labs(size="p-value")+ylab("Hazard Ratio")
+  grid::grid.draw(p_dist)
+  # +
+  # facet_wrap(~ gender, nrow = 12)
+
+  ggsave2_tri_tag(p_dist, wid = 15, hei = 12, tag = lc)
+}
+
+# lc
+warnings()
+```
+
+```{r}
+f_res <- "./res/res_smr.xlsx"
+write.xlsx(df_res, f_res)
+
+f_res <- "./res/res_smr.rds"
+saveRDS(df_res, file = f_res)
+
+```
+
+
+```{r}
+sessionInfo()
+```
+
